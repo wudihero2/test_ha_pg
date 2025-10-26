@@ -1,0 +1,589 @@
+# headless service to avoid deletion of patronidemo-config endpoint
+apiVersion: v1
+kind: Service
+metadata:
+  name: patronidemo-config
+  labels:
+    application: patroni
+    cluster-name: patronidemo
+spec:
+  clusterIP: None
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pg-exporter-queries
+data:
+  queries.yaml: |
+    pg_basic:
+      query: |
+        SELECT
+          extract(EPOCH FROM now() - pg_postmaster_start_time()) AS uptime,
+          pg_is_in_recovery() AS is_in_recovery
+      metrics:
+        - uptime:
+            usage: GAUGE
+            description: seconds since postmaster start
+        - is_in_recovery:
+            usage: GAUGE
+            description: 1 if in recovery mode
+    pg_primary_only:
+      query: |
+        SELECT
+          extract(EPOCH FROM CURRENT_TIMESTAMP)                  AS timestamp,
+          extract(EPOCH FROM now() - pg_postmaster_start_time()) AS uptime,
+          extract(EPOCH FROM pg_postmaster_start_time())         AS boot_time,
+          (pg_current_wal_lsn() - '0/0'::pg_lsn)                 AS lsn,
+          (pg_current_wal_insert_lsn() - '0/0'::pg_lsn)          AS insert_lsn,
+          (pg_current_wal_lsn() - '0/0'::pg_lsn)                 AS write_lsn,
+          (pg_current_wal_flush_lsn() - '0/0'::pg_lsn)           AS flush_lsn,
+          NULL::BIGINT                                           AS receive_lsn,
+          NULL::BIGINT                                           AS replay_lsn,
+          extract(EPOCH FROM pg_conf_load_time())                AS reload_time,
+          extract(EPOCH FROM now() - pg_conf_load_time())        AS conf_reload_time,
+          NULL::DOUBLE PRECISION                                 AS last_replay_time,
+          0::DOUBLE PRECISION                                    AS lag,
+          pg_is_in_recovery()                                    AS is_in_recovery,
+          FALSE                                                  AS is_wal_replay_paused
+        WHERE NOT pg_is_in_recovery();  -- primary only
+      metrics:
+        - timestamp:
+            usage: GAUGE
+            description: current database timestamp in unix epoch
+        - uptime:
+            usage: GAUGE
+            description: seconds since postmaster start
+        - boot_time:
+            usage: GAUGE
+            description: postmaster boot timestamp in unix epoch
+        - lsn:
+            usage: COUNTER
+            description: log sequence number, current write location
+        - insert_lsn:
+            usage: COUNTER
+            description: primary only, location of current wal inserting
+        - write_lsn:
+            usage: COUNTER
+            description: primary only, location of current wal writing
+        - flush_lsn:
+            usage: COUNTER
+            description: primary only, location of current wal syncing
+        - receive_lsn:
+            usage: COUNTER
+            description: replica only, location of wal synced to disk (NULL on primary)
+        - replay_lsn:
+            usage: COUNTER
+            description: replica only, location of wal applied (NULL on primary)
+        - reload_time:
+            usage: GAUGE
+            description: time when configuration was last reloaded (epoch)
+        - conf_reload_time:
+            usage: GAUGE
+            description: seconds since last configuration reload
+        - last_replay_time:
+            usage: GAUGE
+            description: time when last transaction been replayed (NULL on primary)
+        - lag:
+            usage: GAUGE
+            description: replication lag in seconds (0 on primary)
+        - is_in_recovery:
+            usage: GAUGE
+            description: 1 if in recovery mode
+        - is_wal_replay_paused:
+            usage: GAUGE
+            description: 1 if wal replay is paused
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-create-user
+type: Opaque
+stringData:
+  USERNAME: "postgres_exporter"
+  PASSWORD: "strong-pass"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pg-bootstrap-sql
+data:
+  create_exporter.sql: |
+    DO $$
+    DECLARE
+      pwd text := current_setting('pg_exporter.exporter_password', true);
+    BEGIN
+      IF pwd IS NULL OR length(pwd) = 0 THEN
+        RAISE EXCEPTION 'pg_exporter.exporter_password is not set';
+      END IF;
+
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'postgres_exporter') THEN
+        EXECUTE format('CREATE ROLE postgres_exporter LOGIN PASSWORD %L', pwd);
+      ELSE
+        EXECUTE format('ALTER ROLE postgres_exporter LOGIN PASSWORD %L', pwd);
+      END IF;
+    END$$;
+
+    GRANT pg_monitor TO postgres_exporter;
+    -- （需要的話再加）GRANT CONNECT ON DATABASE postgres TO postgres_exporter;
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: patronidemo
+  labels:
+    application: patroni
+    cluster-name: patronidemo
+spec:
+  replicas: 3
+  serviceName: patronidemo
+  selector:
+    matchLabels:
+      application: patroni
+      cluster-name: patronidemo
+  template:
+    metadata:
+      labels:
+        application: patroni
+        cluster-name: patronidemo
+    spec:
+      serviceAccountName: patronidemo
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: patronidemo
+        image: patroni:test
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          httpGet:
+            scheme: HTTP
+            path: /readiness
+            port: 8008
+          initialDelaySeconds: 3
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        ports:
+        - name: http
+          containerPort: 8008
+          protocol: TCP
+        - name: pg
+          containerPort: 5432
+          protocol: TCP
+        volumeMounts:
+        - name: pgdata
+          mountPath: /home/postgres/pgdata
+        env:
+        - name: PATRONI_KUBERNETES_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: PATRONI_KUBERNETES_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        # 使用 ConfigMaps 作為 DCS，不使用 Endpoints
+        - name: PATRONI_KUBERNETES_USE_CONFIGMAPS
+          value: "true"
+        - name: PATRONI_KUBERNETES_USE_ENDPOINTS
+          value: "false"
+        - name: PATRONI_KUBERNETES_BYPASS_API_SERVICE
+          value: "false"
+        # 叢集靜態標籤（用於發現同伴）
+        - name: PATRONI_KUBERNETES_LABELS
+          value: "{application: patroni, cluster-name: patronidemo}"
+        # 讓 Patroni 在 Pod 上動態打角色標籤（primary/replica）
+        - name: PATRONI_KUBERNETES_ROLE_LABEL
+          value: "role"
+        # 基本帳號密碼（你的 Secret 已存在）
+        - name: PATRONI_SUPERUSER_USERNAME
+          value: postgres
+        - name: PATRONI_SUPERUSER_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: patronidemo
+              key: superuser-password
+        - name: PATRONI_REPLICATION_USERNAME
+          value: standby
+        - name: PATRONI_REPLICATION_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: patronidemo
+              key: replication-password
+        # 其他 Patroni/Postgres 設定
+        - name: PATRONI_SCOPE
+          value: patronidemo
+        - name: PATRONI_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: PATRONI_POSTGRESQL_DATA_DIR
+          value: /home/postgres/pgdata/pgroot/data
+        - name: PATRONI_POSTGRESQL_PGPASS
+          value: /tmp/pgpass
+        - name: PATRONI_POSTGRESQL_LISTEN
+          value: "0.0.0.0:5432"
+        - name: PATRONI_RESTAPI_LISTEN
+          value: "0.0.0.0:8008"
+
+      - name: postgres-exporter
+        image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: metrics
+          containerPort: 9187
+          protocol: TCP
+        env:
+        - name: DATA_SOURCE_NAME
+          valueFrom:
+            secretKeyRef:
+              name: pg-exporter-dsn
+              key: DATA_SOURCE_NAME
+        # 自訂查詢（postgres_exporter 版）
+        - name: PG_EXPORTER_EXTEND_QUERY_PATH
+          value: /queries/queries.yaml
+        volumeMounts:
+        - name: exporter-queries
+          mountPath: /queries
+
+      volumes:
+      - name: exporter-queries
+        configMap:
+          name: pg-exporter-queries
+
+  volumeClaimTemplates:
+  - metadata:
+      name: pgdata
+      labels:
+        application: patroni
+        cluster-name: patronidemo
+    spec:
+      storageClassName: standard
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 20Gi
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: patroni-create-exporter
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: psql
+        image: postgres:17
+        command: ["/bin/sh","-lc"]
+        args:
+          - |
+            set -euo pipefail
+            HOST="patronidemo-primary"
+            PORT="5432"
+            DB="postgres"
+            USER="postgres"
+
+            echo "[job] waiting postgres on $HOST:$PORT ..."
+            until pg_isready -h "$HOST" -p "$PORT" -U "$USER" -d "$DB" -t 2; do
+              sleep 2
+            done
+
+            cat >/tmp/create_exporter.sql <<'SQL'
+            \set ON_ERROR_STOP on
+            -- 1) 依是否存在，動態產出 CREATE 或 ALTER，然後 \gexec 執行
+            WITH s AS (
+              SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'USERNAME')) 
+            SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'USERNAME')
+                        THEN format('ALTER ROLE %I LOGIN PASSWORD %L', :'USERNAME', :'PASSWORD')
+                        ELSE format('CREATE ROLE %I LOGIN PASSWORD %L', :'USERNAME', :'PASSWORD')
+                   END;
+            \gexec
+
+            -- 2) 授權（識別字用 :"NAME"；字串常值用 :'NAME'）
+            GRANT pg_monitor TO :"USERNAME";
+            GRANT CONNECT ON DATABASE postgres TO :"USERNAME";
+            SQL
+
+            psql "host=$HOST port=$PORT user=$USER dbname=$DB" \
+                 -v ON_ERROR_STOP=1 \
+                 -v USERNAME="$NEW_USERNAME" \
+                 -v PASSWORD="$NEW_PASSWORD" \
+                 -f /tmp/create_exporter.sql
+
+            echo "[job] done"
+        env:
+        # 連線用超級使用者密碼（你 Patroni 的 Secret）
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: patronidemo
+              key: superuser-password
+        # 目標使用者/密碼從 pg-create-user 帶入
+        - name: NEW_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: pg-create-user
+              key: USERNAME
+        - name: NEW_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pg-create-user
+              key: PASSWORD
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: &cluster_name patronidemo
+  labels:
+    application: patroni
+    cluster-name: *cluster_name
+subsets: []
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: &cluster_name patronidemo
+  labels:
+    application: patroni
+    cluster-name: *cluster_name
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patronidemo-repl
+  labels:
+    application: patroni
+    cluster-name:  &cluster_name patronidemo
+    role: replica
+spec:
+  type: ClusterIP
+  selector:
+    application: patroni
+    cluster-name: *cluster_name
+    role: replica
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: &cluster_name patronidemo
+  labels:
+    application: patroni
+    cluster-name: *cluster_name
+type: Opaque
+data:
+  superuser-password: emFsYW5kbw==
+  replication-password: cmVwLXBhc3M=
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: patronidemo
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: patronidemo
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+  # delete and deletecollection are required only for 'patronictl remove'
+  - delete
+  - deletecollection
+- apiGroups:
+  - ""
+  resources:
+  - endpoints
+  verbs:
+  - get
+  - patch
+  - update
+  # the following three privileges are necessary only when using endpoints
+  - create
+  - list
+  - watch
+  # delete and deletecollection are required only for for 'patronictl remove'
+  - delete
+  - deletecollection
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+# The following privilege is only necessary for creation of headless service
+# for patronidemo-config endpoint, in order to prevent cleaning it up by the
+# k8s master. You can avoid giving this privilege by explicitly creating the
+# service like it is done in this manifest (lines 2..10)
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patronidemo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: patronidemo
+subjects:
+- kind: ServiceAccount
+  name: patronidemo
+
+# Following privileges are only required if deployed not in the "default"
+# namespace and you want Patroni to bypass kubernetes service
+# (PATRONI_KUBERNETES_BYPASS_API_SERVICE=true)
+# ---
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: ClusterRole
+# metadata:
+#   name: patroni-k8s-ep-access
+# rules:
+# - apiGroups:
+#   - ""
+#   resources:
+#   - endpoints
+#   resourceNames:
+#   - kubernetes
+#   verbs:
+#   - get
+
+# ---
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: ClusterRoleBinding
+# metadata:
+#   name: patroni-k8s-ep-access
+# roleRef:
+#   apiGroup: rbac.authorization.k8s.io
+#   kind: ClusterRole
+#   name: patroni-k8s-ep-access
+# subjects:
+# - kind: ServiceAccount
+#   name: patronidemo
+# # The namespace must be specified explicitly.
+# # If deploying to the different namespace you have to change it.
+#   namespace: default
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patronidemo-metrics
+  labels:
+    app.kubernetes.io/name: patroni
+    app.kubernetes.io/instance: patronidemo
+spec:
+  type: ClusterIP
+  selector:
+    application: patroni
+    cluster-name: patronidemo   # ← 把所有 Patroni Pod（主+備）都選進來
+  ports:
+  - name: http-metrics          # ← 一定要有「命名」的 port，供 SM 用
+    port: 8008
+    targetPort: 8008
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: patronidemo
+  labels:
+    release: my-monitor   # ← 一定要對到你的 helm release 名稱！
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: patroni
+      app.kubernetes.io/instance: patronidemo
+  endpoints:
+  - port: http-metrics
+    path: /metrics
+    interval: 15s
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-exporter-dsn
+type: Opaque
+stringData:
+  DATA_SOURCE_NAME: postgresql://postgres_exporter:strong-pass@127.0.0.1:5432/postgres?sslmode=disable
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patronidemo-exporter
+  labels:
+    app.kubernetes.io/name: postgresql-exporter
+    app.kubernetes.io/instance: patronidemo
+spec:
+  type: ClusterIP
+  selector:
+    application: patroni
+    cluster-name: patronidemo   # 把 StatefulSet 的所有 Pod（主+備）都選進來
+  ports:
+  - name: http-metrics
+    port: 9187
+    targetPort: metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: patronidemo-exporter
+  labels:
+    release: my-monitor
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql-exporter
+      app.kubernetes.io/instance: patronidemo
+  endpoints:
+  - port: http-metrics
+    interval: 15s
+    path: /metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patronidemo-primary
+  labels:
+    application: patroni
+    cluster-name: patronidemo
+spec:
+  type: ClusterIP
+  selector:
+    application: patroni
+    cluster-name: patronidemo
+    role: primary         # ← 若你的 Patroni 貼的是 primary，改成 primary
+  ports:
+  - name: pg
+    port: 5432
+    targetPort: 5432

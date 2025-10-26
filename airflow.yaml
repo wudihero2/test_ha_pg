@@ -1,0 +1,40 @@
+data:
+  metadataConnection:
+    user: postgres
+    pass: zalando
+    protocol: postgresql
+    host: patronidemo-primary.default
+    port: 5432
+    db: postgres
+    sslmode: disable
+    secretAnnotations: {}
+
+# postgresql:
+#   enabled: false
+
+# migrateDatabaseJob:
+#   enabled: false
+
+# workers:
+#   waitForMigrations:
+#     enabled: false
+
+# scheduler:
+#   waitForMigrations:
+#     enabled: false
+
+# apiServer:
+#   waitForMigrations:
+#     enabled: false
+
+# webserver:
+#   waitForMigrations:
+#     enabled: false
+
+# triggerer:
+#   waitForMigrations:
+#     enabled: false
+
+# dagProcessor:
+#   waitForMigrations:
+#     enabled: false
