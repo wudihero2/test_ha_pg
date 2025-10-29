@@ -60,3 +60,9 @@ kubectl port-forward svc/$RELEASE_NAME-api-server 8080:8080
 ```
 psql -h 127.0.0.1 -p 5432 -U postgres -d postgres
 ```
+
+
+```
+https://github.com/patroni/patroni/issues/3459
+https://github.com/patroni/patroni/blob/master/postgres0.yml
+```

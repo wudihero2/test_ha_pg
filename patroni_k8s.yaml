@@ -134,7 +134,7 @@ metadata:
     application: patroni
     cluster-name: patronidemo
 spec:
-  replicas: 3
+  replicas: 5
   serviceName: patronidemo
   selector:
     matchLabels:

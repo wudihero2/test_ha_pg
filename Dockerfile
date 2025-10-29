@@ -10,6 +10,8 @@ RUN export DEBIAN_FRONTEND=noninteractive \
     && localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8 \
     && pip3 install --break-system-packages setuptools \
     && pip3 install --break-system-packages patroni[kubernetes] \
+    # Install barman
+    && apt-get install -y barman barman-cli \
     && PGHOME=/home/postgres \
     && mkdir -p $PGHOME \
     && chown postgres $PGHOME \
