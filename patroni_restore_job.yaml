@@ -1,0 +1,119 @@
+---
+# Patroni Restore Job
+# 用途：從 Barman 備份 PVC 恢復數據到指定的 Patroni PVC
+#
+# 使用方法：
+# 1. 停止目標 Patroni pod: kubectl delete pod patronidemo-0
+# 2. 停止 Barman 釋放 PVC: kubectl scale statefulset barman --replicas=0
+# 3. 修改下方 TARGET_PVC 為目標 PVC 名稱
+# 4. 執行: kubectl apply -f patroni_restore_job.yaml
+# 5. 等待完成: kubectl wait --for=condition=complete job/patroni-restore --timeout=30m
+# 6. 恢復 Barman: kubectl scale statefulset barman --replicas=1
+# 7. 啟動 Patroni: kubectl scale statefulset patronidemo --replicas=N
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: patroni-restore
+  labels:
+    app: patroni-restore
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: patroni-restore
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: restore
+        image: postgres:17
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -euo pipefail
+
+            echo "=== Patroni Restore from Barman Backup ==="
+            echo "Backup source: /barman-backup"
+            echo "Restore target: /pgdata"
+
+            # 找到 Barman 備份目錄結構
+            BARMAN_BASE="/barman-backup/patronidemo/base"
+
+            if [[ ! -d "$BARMAN_BASE" ]]; then
+              echo "ERROR: Barman backup directory not found: $BARMAN_BASE"
+              exit 1
+            fi
+
+            # 列出可用備份
+            echo "Available backups:"
+            ls -lh "$BARMAN_BASE"
+
+            # 找到最新的備份（按時間排序）
+            LATEST_BACKUP=$(ls -td "$BARMAN_BASE"/*/ 2>/dev/null | head -1)
+
+            if [[ -z "$LATEST_BACKUP" ]]; then
+              echo "ERROR: No backup found in $BARMAN_BASE"
+              exit 1
+            fi
+
+            echo "Using backup: $LATEST_BACKUP"
+
+            # 檢查備份完整性
+            if [[ ! -f "$LATEST_BACKUP/data/PG_VERSION" ]]; then
+              echo "ERROR: Invalid backup - PG_VERSION not found"
+              exit 1
+            fi
+
+            PG_VERSION=$(cat "$LATEST_BACKUP/data/PG_VERSION")
+            echo "PostgreSQL version: $PG_VERSION"
+
+            # 清空目標目錄
+            TARGET_DIR="/pgdata/pgroot/data"
+            echo "Cleaning target directory: $TARGET_DIR"
+            rm -rf "$TARGET_DIR"/*
+
+            # 複製備份數據
+            echo "Copying backup data..."
+            cp -av "$LATEST_BACKUP/data/." "$TARGET_DIR/"
+
+            # 設置正確的權限（PostgreSQL 要求 0700）
+            echo "Setting permissions..."
+            chmod 0700 "$TARGET_DIR"
+
+            # 創建 recovery signal（如果需要的話）
+            # touch "$TARGET_DIR/recovery.signal"
+
+            echo "=== Restore completed successfully ==="
+            echo "Backup: $LATEST_BACKUP"
+            echo "Target: $TARGET_DIR"
+            echo "Size: $(du -sh $TARGET_DIR | cut -f1)"
+
+        volumeMounts:
+        - name: barman-backup
+          mountPath: /barman-backup
+          readOnly: true  # 只讀掛載，避免誤修改備份
+        - name: target-pgdata
+          mountPath: /pgdata
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+
+      volumes:
+      - name: barman-backup
+        persistentVolumeClaim:
+          claimName: pgdata-barman-0  # Barman 的 PVC 名稱
+
+      - name: target-pgdata
+        persistentVolumeClaim:
+          claimName: pgdata-patronidemo-0  # 要恢復到的 Patroni PVC
+          # 修改為你要恢復的目標 pod 的 PVC：
+          # - pgdata-patronidemo-0
+          # - pgdata-patronidemo-1
+          # - pgdata-patronidemo-2
+          # 等等...
