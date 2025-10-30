@@ -1,26 +1,11 @@
 ```
-colima start --cpu 16 --memory 16 --disk 100
-docker exec kind-control-plane ctr -n k8s.io images pull docker.io/library/postgres:16.10
-
-kind delete cluster
-kind create cluster
-
-
-helm install my-monitor oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack
-helm uninstall my-monitor oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack
-docker build -t patroni:test .
-
-kind load docker-image patroni:test
-
-kubectl apply -f patroni_k8s.yaml
-
-
 # monitor pg
 https://github.com/pgsty/pg_exporter/blob/main/config/0110-pg.yml
 https://erhwenkuo.github.io/prometheus/postgres-exporter/postgres-exporter-integration/#dashboards-configmaps-gitops
 
-# 使用 Helm 本地安裝 Apache Airflow 指南
 
+# 使用 Helm 本地安裝 Apache Airflow 指南
+```
 # 0) 一次確認環境
 helm version
 kubectl version --client

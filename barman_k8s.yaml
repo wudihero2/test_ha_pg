@@ -1,0 +1,133 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: barman-config
+data:
+  barman.conf: |
+    [barman]
+    barman_user = barman
+    configuration_files_directory = /etc/barman/barman.d
+    barman_home = /var/lib/barman
+    log_file = /var/log/barman/barman.log
+    log_level = INFO
+    compression = gzip
+
+  patronidemo.conf: |
+    [patronidemo]
+    description = "Patroni Demo Cluster Backup"
+    conninfo = host=patronidemo-primary port=5432 user=postgres dbname=postgres passfile='/home/postgres/.pgpass'
+    backup_method = postgres
+    streaming_conninfo = host=patronidemo-primary port=5432 user=standby dbname=postgres passfile='/home/postgres/.pgpass'
+    slot_name = barman
+    create_slot = auto
+    streaming_archiver = on
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: barman-pgpass
+type: Opaque
+stringData:
+  .pgpass: |
+    patronidemo-primary:5432:*:postgres:zalando
+    patronidemo-primary:5432:*:standby:rep-pass
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: barman-data
+spec:
+  storageClassName: standard
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: barman
+  labels:
+    app: barman
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: barman
+  template:
+    metadata:
+      labels:
+        app: barman
+    spec:
+      initContainers:
+      - name: fix-pgpass-permissions
+        image: barman:test
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+          - |
+            cp /tmp/pgpass-secret/.pgpass /home/postgres/.pgpass
+            chmod 0600 /home/postgres/.pgpass
+            ls -la /home/postgres/.pgpass
+            echo "pgpass permissions fixed"
+        volumeMounts:
+        - name: barman-pgpass-secret
+          mountPath: /tmp/pgpass-secret
+        - name: barman-pgpass-workdir
+          mountPath: /home/postgres
+      containers:
+      - name: barman
+        image: barman:test
+        imagePullPolicy: IfNotPresent
+        command: ["sleep", "infinity"]
+        volumeMounts:
+        - name: barman-data
+          mountPath: /var/lib/barman
+        - name: barman-config
+          mountPath: /etc/barman.conf
+          subPath: barman.conf
+        - name: barman-config
+          mountPath: /etc/barman/barman.d/patronidemo.conf
+          subPath: patronidemo.conf
+        - name: barman-pgpass-workdir
+          mountPath: /home/postgres
+        - name: barman-log
+          mountPath: /var/log/barman
+        env:
+        - name: PGPASSFILE
+          value: /home/postgres/.pgpass
+      volumes:
+      - name: barman-data
+        persistentVolumeClaim:
+          claimName: barman-data
+      - name: barman-config
+        configMap:
+          name: barman-config
+      - name: barman-pgpass-secret
+        secret:
+          secretName: barman-pgpass
+      - name: barman-pgpass-workdir
+        emptyDir: {}
+      - name: barman-log
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: barman
+  labels:
+    app: barman
+spec:
+  type: ClusterIP
+  selector:
+    app: barman
+  ports:
+  - name: ssh
+    port: 22
+    targetPort: 22
