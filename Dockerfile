@@ -1,4 +1,4 @@
-FROM postgres:16
+FROM postgres:17
 
 RUN export DEBIAN_FRONTEND=noninteractive \
     && echo 'APT::Install-Recommends "0";\nAPT::Install-Suggests "0";' > /etc/apt/apt.conf.d/01norecommend \
@@ -10,8 +10,8 @@ RUN export DEBIAN_FRONTEND=noninteractive \
     && localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8 \
     && pip3 install --break-system-packages setuptools \
     && pip3 install --break-system-packages patroni[kubernetes] \
-    # Install barman
-    && apt-get install -y barman barman-cli \
+    # Install barman and zstandard for compression
+    && apt-get install -y barman barman-cli barman-cli-cloud \
     && PGHOME=/home/postgres \
     && mkdir -p $PGHOME \
     && chown postgres $PGHOME \

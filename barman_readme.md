@@ -1,3 +1,4 @@
+```
 docker build -f ./barman.Dockerfile -t barman:test .
 
 kind load docker-image barman:test
@@ -15,3 +16,4 @@ https://www.enterprisedb.com/docs/supported-open-source/barman/single-server-str
 4. wal_archiver
 5. ssh
 6. barman receive-wal
+```

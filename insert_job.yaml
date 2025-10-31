@@ -10,7 +10,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: insert-data
-        image: postgres:16
+        image: postgres:17
         command: ["/bin/bash", "-c"]
         args:
           - |
@@ -27,13 +27,14 @@ spec:
             done
             echo "[$(date)] PostgreSQL is ready!"
 
-            # Create test table
+            # Create test table with larger data column
             psql "host=$HOST port=$PORT user=$USER dbname=$DB" <<'SQL'
             CREATE TABLE IF NOT EXISTS test_data (
               id SERIAL PRIMARY KEY,
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               data TEXT,
-              random_number INTEGER
+              random_number INTEGER,
+              payload JSONB
             );
             CREATE INDEX IF NOT EXISTS idx_test_data_created_at ON test_data(created_at);
             SQL
@@ -45,24 +46,52 @@ spec:
             while true; do
               START_TIME=$(date +%s%N)
 
-              # Insert 100 rows in a single transaction
+              # Insert 10000 rows in a single transaction
+              # Each row is ~2KB (data: ~1KB, payload: ~1KB)
               psql "host=$HOST port=$PORT user=$USER dbname=$DB" -c "
                 BEGIN;
-                INSERT INTO test_data (data, random_number)
+                INSERT INTO test_data (data, random_number, payload)
                 SELECT
-                  'Test data ' || i || ' - ' || md5(random()::text),
-                  (random() * 1000000)::INTEGER
-                FROM generate_series(1, 100) AS i;
+                  -- Generate ~1KB of text data (32 md5 hashes = 1024 bytes)
+                  repeat(md5(random()::text), 32),
+                  (random() * 1000000)::INTEGER,
+                  -- Generate ~1KB JSONB payload
+                  jsonb_build_object(
+                    'id', i,
+                    'timestamp', now(),
+                    'user_id', (random() * 10000)::INTEGER,
+                    'session_id', md5(random()::text),
+                    'ip_address',
+                      (random() * 255)::INTEGER || '.' ||
+                      (random() * 255)::INTEGER || '.' ||
+                      (random() * 255)::INTEGER || '.' ||
+                      (random() * 255)::INTEGER,
+                    'user_agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'metadata', jsonb_build_object(
+                      'action', 'page_view',
+                      'page', '/products/' || (random() * 1000)::INTEGER,
+                      'referrer', 'https://google.com/search?q=' || md5(random()::text),
+                      'duration_ms', (random() * 5000)::INTEGER,
+                      'tags', jsonb_build_array(
+                        'tag_' || (random() * 100)::INTEGER,
+                        'tag_' || (random() * 100)::INTEGER,
+                        'tag_' || (random() * 100)::INTEGER
+                      )
+                    ),
+                    'extra_data', repeat('x', 200)
+                  )
+                FROM generate_series(1, 10000) AS i;
                 COMMIT;
               "
 
-              COUNTER=$((COUNTER + 100))
+              COUNTER=$((COUNTER + 10000))
               END_TIME=$(date +%s%N)
               ELAPSED=$((($END_TIME - $START_TIME) / 1000000))
 
-              if [ $((COUNTER % 1000)) -eq 0 ]; then
+              if [ $((COUNTER % 10000)) -eq 0 ]; then
                 TOTAL_ROWS=$(psql -t "host=$HOST port=$PORT user=$USER dbname=$DB" -c "SELECT COUNT(*) FROM test_data;")
-                echo "[$(date)] Inserted $COUNTER rows (Total: $TOTAL_ROWS rows) - Last batch took ${ELAPSED}ms"
+                TABLE_SIZE=$(psql -t "host=$HOST port=$PORT user=$USER dbname=$DB" -c "SELECT pg_size_pretty(pg_total_relation_size('test_data'));")
+                echo "[$(date)] Inserted $COUNTER rows (Total: $TOTAL_ROWS rows, Size: $TABLE_SIZE) - Last batch took ${ELAPSED}ms (~2KB/row)"
               fi
 
               # Sleep to maintain roughly 100 inserts per second

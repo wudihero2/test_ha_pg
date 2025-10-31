@@ -9,9 +9,8 @@ data:
     barman_user = barman
     configuration_files_directory = /etc/barman/barman.d
     barman_home = /var/lib/barman
-    log_file = /var/log/barman/barman.log
     log_level = INFO
-    compression = gzip
+    compression = zstd
 
   patronidemo.conf: |
     [patronidemo]
@@ -22,6 +21,8 @@ data:
     slot_name = barman
     create_slot = auto
     streaming_archiver = on
+    post_backup_retry_script = barman-cloud-backup --endpoint-url ${AWS_ENDPOINT_URL} s3://barman-backups patronidemo
+    pre_archive_retry_script = barman-cloud-wal-archive --endpoint-url ${AWS_ENDPOINT_URL} s3://barman-backups patronidemo
 
 ---
 apiVersion: v1
@@ -33,6 +34,17 @@ stringData:
   .pgpass: |
     patronidemo-primary:5432:*:postgres:zalando
     patronidemo-primary:5432:*:standby:rep-pass
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: barman-s3-credentials
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: minioadmin
+  AWS_SECRET_ACCESS_KEY: minioadmin123
+  AWS_ENDPOINT_URL: http://minio:9000
 
 ---
 apiVersion: v1
@@ -101,6 +113,21 @@ spec:
         env:
         - name: PGPASSFILE
           value: /home/postgres/.pgpass
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: barman-s3-credentials
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: barman-s3-credentials
+              key: AWS_SECRET_ACCESS_KEY
+        - name: AWS_ENDPOINT_URL
+          valueFrom:
+            secretKeyRef:
+              name: barman-s3-credentials
+              key: AWS_ENDPOINT_URL
       volumes:
       - name: barman-data
         persistentVolumeClaim:

@@ -7,7 +7,7 @@ kind create cluster
 helm install my-monitor oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack
 helm uninstall my-monitor oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack
 
-docker exec kind-control-plane ctr -n k8s.io images pull docker.io/library/postgres:16.10
+docker exec kind-control-plane ctr -n k8s.io images pull docker.io/library/postgres:17
 
 docker build -t patroni:test .
 

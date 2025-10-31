@@ -105,67 +105,26 @@ stringData:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: patroni-callbacks
+  name: pg-bootstrap-sql
 data:
-  on_role_change.sh: |
-    #!/bin/bash
-    # Patroni callback parameters:
-    # $1 = action (on_role_change)
-    # $2 = role (master/primary/replica)
-    # $3 = cluster_name
-
-    set -euo pipefail
-
-    ACTION="$1"
-    ROLE="$2"
-    CLUSTER="$3"
-
-    echo "[callback] action=$ACTION role=$ROLE cluster=$CLUSTER"
-
-    # 只在成為 master/primary 時建立 exporter 用戶
-    if [[ "$ROLE" != "master" && "$ROLE" != "primary" ]]; then
-      echo "[callback] Not primary, skipping exporter user creation"
-      exit 0
-    fi
-
-    echo "[callback] Promoted to primary, creating exporter user..."
-
-    EXPORTER_USER="${EXPORTER_USERNAME:-postgres_exporter}"
-    EXPORTER_PASS="${EXPORTER_PASSWORD}"
-
-    if [[ -z "$EXPORTER_PASS" ]]; then
-      echo "[callback] ERROR: EXPORTER_PASSWORD not set" >&2
-      exit 1
-    fi
-
-    # 等待 PostgreSQL 可以接受連線
-    for i in {1..30}; do
-      if psql -d postgres -c "SELECT 1" >/dev/null 2>&1; then
-        break
-      fi
-      echo "[callback] Waiting for PostgreSQL to be ready... ($i/30)"
-      sleep 1
-    done
-
-    # 執行 SQL
-    psql -v ON_ERROR_STOP=1 -d postgres <<EOSQL
-    DO \$\$
+  create_exporter.sql: |
+    DO $$
+    DECLARE
+      pwd text := current_setting('pg_exporter.exporter_password', true);
     BEGIN
-      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${EXPORTER_USER}') THEN
-        CREATE ROLE ${EXPORTER_USER} LOGIN PASSWORD '${EXPORTER_PASS}';
-        RAISE NOTICE 'Created user: ${EXPORTER_USER}';
-      ELSE
-        ALTER ROLE ${EXPORTER_USER} LOGIN PASSWORD '${EXPORTER_PASS}';
-        RAISE NOTICE 'Updated user: ${EXPORTER_USER}';
+      IF pwd IS NULL OR length(pwd) = 0 THEN
+        RAISE EXCEPTION 'pg_exporter.exporter_password is not set';
       END IF;
-    END\$\$;
 
-    GRANT pg_monitor TO ${EXPORTER_USER};
-    GRANT CONNECT ON DATABASE postgres TO ${EXPORTER_USER};
-EOSQL
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'postgres_exporter') THEN
+        EXECUTE format('CREATE ROLE postgres_exporter LOGIN PASSWORD %L', pwd);
+      ELSE
+        EXECUTE format('ALTER ROLE postgres_exporter LOGIN PASSWORD %L', pwd);
+      END IF;
+    END$$;
 
-    echo "[callback] Exporter user setup completed successfully"
-    exit 0
+    GRANT pg_monitor TO postgres_exporter;
+    -- （需要的話再加）GRANT CONNECT ON DATABASE postgres TO postgres_exporter;
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -213,8 +172,12 @@ spec:
         volumeMounts:
         - name: pgdata
           mountPath: /home/postgres/pgdata
-        - name: patroni-callbacks
-          mountPath: /etc/patroni/callbacks
+        - name: barman-config
+          mountPath: /etc/barman.conf
+          subPath: barman.conf
+        - name: barman-config
+          mountPath: /etc/barman/barman.d/patronidemo.conf
+          subPath: patronidemo.conf
         env:
         - name: PATRONI_KUBERNETES_POD_IP
           valueFrom:
@@ -267,20 +230,21 @@ spec:
           value: "0.0.0.0:5432"
         - name: PATRONI_RESTAPI_LISTEN
           value: "0.0.0.0:8008"
-        # Patroni callback 設定
-        - name: PATRONI_POSTGRESQL_CALLBACKS_ON_ROLE_CHANGE
-          value: /etc/patroni/callbacks/on_role_change.sh
-        # Exporter 用戶資訊（供 callback 腳本使用）
-        - name: EXPORTER_USERNAME
+        - name: AWS_ACCESS_KEY_ID
           valueFrom:
             secretKeyRef:
-              name: pg-create-user
-              key: USERNAME
-        - name: EXPORTER_PASSWORD
+              name: barman-s3-credentials
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
           valueFrom:
             secretKeyRef:
-              name: pg-create-user
-              key: PASSWORD
+              name: barman-s3-credentials
+              key: AWS_SECRET_ACCESS_KEY
+        - name: AWS_ENDPOINT_URL
+          valueFrom:
+            secretKeyRef:
+              name: barman-s3-credentials
+              key: AWS_ENDPOINT_URL
 
       - name: postgres-exporter
         image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
@@ -306,10 +270,9 @@ spec:
       - name: exporter-queries
         configMap:
           name: pg-exporter-queries
-      - name: patroni-callbacks
+      - name: barman-config
         configMap:
-          name: patroni-callbacks
-          defaultMode: 0755  # 讓腳本可執行
+          name: barman-config
 
   volumeClaimTemplates:
   - metadata:

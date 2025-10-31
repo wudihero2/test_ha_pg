@@ -16,14 +16,6 @@ bootstrap:
       - host all all 0.0.0.0/0 md5
       - host replication ${PATRONI_REPLICATION_USERNAME} ${PATRONI_KUBERNETES_POD_IP}/16 md5
       - host replication ${PATRONI_REPLICATION_USERNAME} 127.0.0.1/32 md5
-  method: barman
-  barman:
-    no_params: True
-    keep_existing_recovery_conf: True
-    command: barman-cloud-restore --endpoint-url http://minio:9000 s3://barman-backups patronidemo 20251031T170557 /home/postgres/pgdata/pgroot/data
-    recovery_conf:
-      restore_command: barman-cloud-wal-restore --endpoint-url http://minio:9000 s3://barman-backups patronidemo %f %p
-
   initdb:
   - auth-host: md5
   - auth-local: trust
