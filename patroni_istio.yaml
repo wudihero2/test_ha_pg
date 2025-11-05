@@ -1,0 +1,191 @@
+---
+# Enable Istio sidecar injection for the namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: patroni
+  labels:
+    istio-injection: enabled
+---
+# Mutual TLS Policy - STRICT mode
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: patroni-mtls
+  namespace: patroni
+spec:
+  mtls:
+    mode: PERMISSIVE  # Use PERMISSIVE to allow non-mTLS traffic during migration
+  portLevelMtls:
+    5432:
+      mode: DISABLE  # Disable mTLS for PostgreSQL port (database protocol incompatible)
+---
+# DestinationRule for Patroni Primary
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: patronidemo-primary
+  namespace: patroni
+spec:
+  host: patronidemo-primary.patroni.svc.cluster.local
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+        connectTimeout: 30s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+    loadBalancer:
+      simple: ROUND_ROBIN
+    tls:
+      mode: DISABLE  # Disable TLS for PostgreSQL connections
+---
+# DestinationRule for Patroni Replicas
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: patronidemo-repl
+  namespace: patroni
+spec:
+  host: patronidemo-repl.patroni.svc.cluster.local
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+        connectTimeout: 30s
+    loadBalancer:
+      simple: ROUND_ROBIN
+    tls:
+      mode: DISABLE
+---
+# VirtualService for Patroni Primary (internal routing)
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: patronidemo-primary
+  namespace: patroni
+spec:
+  hosts:
+  - patronidemo-primary.patroni.svc.cluster.local
+  tcp:
+  - match:
+    - port: 5432
+    route:
+    - destination:
+        host: patronidemo-primary.patroni.svc.cluster.local
+        port:
+          number: 5432
+      weight: 100
+    timeout: 300s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+---
+# Istio Gateway for external access
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: patroni-gateway
+  namespace: patroni
+spec:
+  selector:
+    istio: ingressgateway  # Use Istio default gateway
+  servers:
+  - port:
+      number: 5432
+      name: tcp-postgresql
+      protocol: TCP
+    hosts:
+    - "*"
+---
+# VirtualService for Gateway (external access to primary)
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: patroni-gateway
+  namespace: patroni
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - patroni-gateway
+  tcp:
+  - match:
+    - port: 5432
+    route:
+    - destination:
+        host: patronidemo-primary.patroni.svc.cluster.local
+        port:
+          number: 5432
+---
+# Telemetry configuration for observability
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: patroni-telemetry
+  namespace: patroni
+spec:
+  metrics:
+  - providers:
+    - name: prometheus
+    dimensions:
+      db_operation: request.headers["x-db-operation"] | "unknown"
+  accessLogging:
+  - providers:
+    - name: envoy
+  tracing:
+  - providers:
+    - name: zipkin
+    randomSamplingPercentage: 10.0
+---
+# ServiceEntry for MinIO (if needed for external traffic control)
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: minio-external
+  namespace: patroni
+spec:
+  hosts:
+  - minio.minio.svc.cluster.local
+  ports:
+  - number: 9000
+    name: http
+    protocol: HTTP
+  location: MESH_INTERNAL
+  resolution: DNS
+---
+# Authorization Policy - Allow access to PostgreSQL
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: patroni-allow-all
+  namespace: patroni
+spec:
+  selector:
+    matchLabels:
+      application: patroni
+  action: ALLOW
+  rules:
+  - to:
+    - operation:
+        ports: ["5432", "8008"]
+---
+# Sidecar configuration to optimize resource usage
+apiVersion: networking.istio.io/v1beta1
+kind: Sidecar
+metadata:
+  name: patroni-sidecar
+  namespace: patroni
+spec:
+  workloadSelector:
+    labels:
+      application: patroni
+  egress:
+  - hosts:
+    - "./*"
+    - "istio-system/*"
+    - "kube-system/*"
+    - "minio/*"
+  outboundTrafficPolicy:
+    mode: ALLOW_ANY

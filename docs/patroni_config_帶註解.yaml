@@ -1,0 +1,569 @@
+# Patroni 配置文件（帶詳細註解）
+
+# ============================================================================
+# Bootstrap 配置 - 初始化叢集時使用（僅在首次創建叢集時生效）
+# ============================================================================
+bootstrap:
+
+  # --------------------------------------------------------------------------
+  # DCS (Distributed Configuration Store) 動態配置
+  # 這些配置會被寫入 DCS，影響整個叢集的行為
+  # --------------------------------------------------------------------------
+  dcs:
+    # 啟用 failsafe 模式
+    # 當 DCS 不可用時，主節點可以繼續提供服務而不會被降級
+    failsafe_mode: true
+
+    # HA 循環的間隔時間（秒）
+    # Patroni 每 10 秒檢查一次叢集狀態並做出決策
+    loop_wait: 10
+
+    # 主節點啟動的最大超時時間（秒）
+    # 如果主節點在 120 秒內沒有啟動完成，會觸發故障轉移
+    master_start_timeout: 120
+
+    # 主節點停止的最大超時時間（秒）
+    # 執行 pg_ctl stop 時的超時時間
+    master_stop_timeout: 10
+
+    # 故障轉移時允許的最大延遲（字節）
+    # 32MB - 如果副本落後主節點超過這個值，不會被選為新主節點
+    maximum_lag_on_failover: 33554432  # 32MB
+
+    # --------------------------------------------------------------------------
+    # PostgreSQL 參數配置
+    # 這些參數會被寫入 postgresql.conf
+    # --------------------------------------------------------------------------
+    postgresql:
+      parameters:
+        # ============ 歸檔和複製相關 ============
+        # 啟用歸檔模式（用於 PITR - 時間點恢復）
+        archive_mode: 'on'
+
+        # 歸檔超時時間 - 即使 WAL 未滿也會強制切換
+        # 1800 秒 = 30 分鐘
+        archive_timeout: 1800s
+
+        # pg_cron 擴展使用的資料庫
+        cron.database_name: seasql
+
+        # 啟用熱備份（允許副本接受只讀查詢）
+        hot_standby: 'on'
+
+        # 熱備份反饋 - 副本會告訴主節點哪些數據還在被查詢
+        # 防止主節點清理副本還在使用的數據
+        hot_standby_feedback: true
+
+        # ============ 超時設置 ============
+        # 空閒事務會話的超時時間
+        # 如果一個事務開始後 10 分鐘內沒有活動，會被自動終止
+        idle_in_transaction_session_timeout: 10min
+
+        # 空閒會話的超時時間
+        # 如果一個連接 10 分鐘內沒有活動，會被自動終止
+        idle_session_timeout: 10min
+
+        # 鎖等待超時 - 等待鎖的最大時間
+        lock_timeout: 10min
+
+        # ============ 日誌設置 ============
+        # 記錄 autovacuum 的最小持續時間（0 = 記錄所有）
+        log_autovacuum_min_duration: 0
+
+        # 記錄 checkpoint 操作
+        log_checkpoints: 'on'
+
+        # 記錄所有客戶端連接
+        log_connections: 'on'
+
+        # 日誌輸出目標（stderr = 標準錯誤輸出）
+        log_destination: stderr
+
+        # 記錄所有客戶端斷開連接
+        log_disconnections: 'on'
+
+        # 日誌行前綴格式
+        # %t=時間戳 %p=進程ID %l=日誌行號 %c=會話ID %x=事務ID %d=資料庫 %u=用戶 %a=應用名 %h=客戶端地址
+        log_line_prefix: '%t [%p]: [%l-1] %c %x %d %u %a %h '
+
+        # 記錄鎖等待事件
+        log_lock_waits: 'on'
+
+        # 記錄慢查詢 - 執行時間超過 1000ms 的語句會被記錄
+        log_min_duration_statement: 1000
+
+        # 記錄複製相關命令
+        log_replication_commands: true
+
+        # 記錄的語句類型 - ddl = 只記錄 DDL 語句（CREATE, ALTER, DROP 等）
+        log_statement: ddl
+
+        # 記錄臨時文件使用情況（0 = 記錄所有）
+        log_temp_files: 0
+
+        # 日誌輪轉時截斷舊文件
+        log_truncate_on_rotation: true
+
+        # 啟用日誌收集器（後台進程收集日誌）
+        logging_collector: true
+
+        # ============ 連接和性能設置 ============
+        # 最大連接數
+        max_connections: '2000'
+
+        # 最大邏輯複製工作進程數
+        max_logical_replication_workers: 8
+
+        # 最大預備事務數（0 = 禁用兩階段提交）
+        max_prepared_transactions: 0
+
+        # 最大複製槽數量
+        max_replication_slots: 10
+
+        # 複製槽保留的 WAL 最大大小
+        # 防止複製槽無限期保留 WAL 文件導致磁盤滿
+        max_slot_wal_keep_size: 20GB
+
+        # 副本恢復時等待歸檔 WAL 的最大延遲
+        max_standby_archive_delay: 10min
+
+        # 副本恢復時等待串流 WAL 的最大延遲
+        max_standby_streaming_delay: 3min
+
+        # 每個訂閱的最大同步工作進程數（邏輯複製）
+        max_sync_workers_per_subscription: 6
+
+        # 最大 WAL 發送進程數（用於串流複製）
+        max_wal_senders: 10
+
+        # WAL 文件的最大總大小
+        # 超過此值會觸發 checkpoint
+        max_wal_size: 10GB
+
+        # 密碼加密方式（md5 或 scram-sha-256）
+        # 注意：md5 已不推薦，建議使用 scram-sha-256
+        password_encryption: md5
+
+        # 提升（promotion）觸發文件的路徑
+        # 創建此文件會將副本提升為主節點
+        promote_trigger_file: promote.signal
+
+        # 為超級用戶保留的連接數
+        superuser_reserved_connections: 10
+
+        # ============ TCP Keepalive 設置 ============
+        # TCP keepalive 開始發送探測包的空閒時間（秒）
+        tcp_keepalives_idle: 900  # 15 分鐘
+
+        # TCP keepalive 探測包之間的間隔（秒）
+        tcp_keepalives_interval: 100
+
+        # ============ 其他設置 ============
+        # 時區設置
+        timezone: Asia/Shanghai
+
+        # 追蹤提交時間戳（用於邏輯複製和複製槽）
+        track_commit_timestamp: true
+
+        # 追蹤函數調用統計（none = 不追蹤）
+        track_functions: none
+
+        # Unix socket 目錄
+        unix_socket_directories: /tmp
+
+        # VACUUM 延遲清理的事務數
+        # 0 = 不延遲，立即清理
+        vacuum_defer_cleanup_age: 0
+
+        # ============ WAL 相關設置 ============
+        # WAL 壓縮（減少 WAL 文件大小）
+        wal_compression: 'on'
+
+        # 保留的 WAL 文件最小大小
+        # 防止副本因為主節點 WAL 文件被刪除而無法複製
+        wal_keep_size: 8GB
+
+        # WAL 日誌級別
+        # hot_standby = 支援熱備份複製（舊版參數名）
+        # 新版應該使用 'replica' 或更高級別
+        wal_level: hot_standby
+
+        # WAL 日誌提示 - 記錄頁面的完整副本
+        # 啟用此選項才能使用 pg_rewind
+        wal_log_hints: 'on'
+
+        # WAL 接收器向主節點發送狀態更新的間隔
+        wal_receiver_status_interval: 1s
+
+        # WAL 接收器的超時時間
+        # 如果 60 秒內沒有收到數據，認為連接已斷開
+        wal_receiver_timeout: 60s
+
+      # --------------------------------------------------------------------------
+      # 複製失敗時的行為
+      # --------------------------------------------------------------------------
+      # 當創建副本失敗時，是否刪除數據目錄
+      # true = 刪除（允許重試）
+      remove_data_directory_on_creating_replication_failed: true
+
+      # 當 pg_rewind 失敗時，是否刪除數據目錄
+      remove_data_directory_on_rewind_failure: true
+
+      # 使用 pg_rewind 來重新同步副本
+      # 當副本與主節點分叉時使用
+      use_pg_rewind: true
+
+      # 使用複製槽（replication slots）
+      # 確保主節點不會刪除副本還需要的 WAL 文件
+      use_slots: true
+
+    # --------------------------------------------------------------------------
+    # 重試超時時間（秒）
+    # DCS 操作失敗後的重試超時
+    # --------------------------------------------------------------------------
+    retry_timeout: 10
+
+    # --------------------------------------------------------------------------
+    # 同步複製設置
+    # --------------------------------------------------------------------------
+    # 啟用同步複製模式
+    # 主節點會等待至少一個副本確認接收到 WAL 後才提交事務
+    synchronous_mode: true
+
+    # 同步副本的數量
+    # 1 = 至少一個副本必須確認
+    synchronous_node_count: 1
+
+    # --------------------------------------------------------------------------
+    # TTL (Time To Live) 設置
+    # Leader key 在 DCS 中的過期時間（秒）
+    # --------------------------------------------------------------------------
+    ttl: 30
+
+  # ============================================================================
+  # Initdb 配置 - PostgreSQL 初始化參數
+  # 這些參數會傳遞給 initdb 命令
+  # ============================================================================
+  initdb:
+  - auth-host: md5          # 主機連接使用 MD5 密碼認證
+  - auth-local: trust       # 本地連接使用 trust（不需要密碼）
+  - data-checksums          # 啟用數據校驗和（檢測磁盤損壞）
+  - encoding: UTF8          # 字符編碼
+  - locale: en_US.UTF-8     # 區域設置
+
+  # ============================================================================
+  # Post Init 腳本 - 初始化後執行的腳本
+  # 在 initdb 完成後、PostgreSQL 啟動前執行
+  # ============================================================================
+  post_init: /scripts/post_init.sh "zalandos"
+
+  # ============================================================================
+  # ⚠️ 用戶配置 - 已廢棄！
+  # 從 Patroni v4.0.0 開始，bootstrap.users 已經不再支持！
+  # 必須使用 post_bootstrap 或 post_init 腳本來創建用戶
+  # ============================================================================
+  users:
+    zalandos:
+      options:
+      - CREATEDB              # 允許創建資料庫
+      - NOLOGIN               # 不允許登錄（只是一個角色模板）
+      password: ''            # 空密碼
+  # ⚠️ 這個配置在 Patroni v4.0.0+ 中無效！
+  # 請改用 post_bootstrap 腳本：
+  #   post_bootstrap: /scripts/create_users.sh
+
+# ============================================================================
+# Kubernetes DCS 配置
+# 使用 Kubernetes API 作為 DCS
+# ============================================================================
+kubernetes:
+  # 繞過 Kubernetes Service，直接訪問 API Server
+  # 減少網路跳轉，提高性能
+  bypass_api_service: true
+
+  # Pod 標籤配置
+  labels:
+    application: spilo      # 應用標籤
+
+  # Leader 標籤的值
+  # 主節點的 label 會被設置為這個值
+  leader_label_value: master
+
+  # Pod IP 地址（由 Kubernetes 自動注入）
+  pod_ip: 177.177.150.184
+
+  # Kubernetes Service 相關環境變數
+  # 這些通常由 Kubernetes 自動注入到 Pod 中
+  port: tcp://10.96.0.1:443
+  port_443_tcp: tcp://10.96.0.1:443
+  port_443_tcp_addr: 10.96.0.1
+  port_443_tcp_port: '443'
+  port_443_tcp_proto: tcp
+
+  # PostgreSQL 端口配置
+  ports:
+  - name: seasql          # PostgreSQL 主端口
+    port: 1523
+  - name: patroni         # Patroni REST API 端口
+    port: 8008
+
+  # 角色標籤的 key
+  # Patroni 會更新 Pod 的這個 label 來表示角色（primary/replica）
+  role_label: spilo-role
+
+  # 叢集名稱標籤的 key
+  scope_label: cluster-name
+
+  # Kubernetes API Server 地址
+  service_host: 10.96.0.1
+  service_port: '443'
+  service_port_https: '443'
+
+  # Standby leader 的標籤值（用於級聯複製）
+  standby_leader_label_value: master
+
+  # 使用 Endpoints 而不是 ConfigMap 作為 DCS 存儲
+  # Endpoints: 更輕量，但功能較少
+  # ConfigMap: 功能更完整（推薦）
+  use_endpoints: true
+
+# ============================================================================
+# 日誌配置
+# ============================================================================
+log:
+  # 日誌日期格式
+  dateformat: '%Y-%m-%d %H:%M:%S %z'
+
+  # 日誌目錄
+  dir: /var/lib/seasql/ssdata/log
+
+  # 保留的日誌文件數量
+  file_num: 5
+
+  # 單個日誌文件的最大大小（字節）
+  file_size: 33554432      # 32MB
+
+  # 日誌格式
+  format: '%(asctime)s %(levelname)s: %(message)s'
+
+  # 日誌級別（DEBUG, INFO, WARNING, ERROR）
+  level: INFO
+
+# ============================================================================
+# Namespace - Patroni 運行的 Kubernetes namespace
+# ============================================================================
+namespace: service-software
+
+# ============================================================================
+# PostgreSQL 實例配置
+# 這是 Patroni 管理的 PostgreSQL 實例的具體設置
+# ============================================================================
+postgresql:
+  # --------------------------------------------------------------------------
+  # 認證配置
+  # --------------------------------------------------------------------------
+  authentication:
+    # 複製用戶（用於串流複製）
+    replication:
+      password: Or10TL+hRs.=N@0l54
+      username: standby
+
+    # 超級用戶（Patroni 用來管理 PostgreSQL）
+    superuser:
+      password: Or10TL+hRs.=N@0l54
+      username: ssadmin
+
+  # --------------------------------------------------------------------------
+  # 自定義 basebackup 方法
+  # 用於創建副本時從主節點複製數據
+  # --------------------------------------------------------------------------
+  basebackup_fast_xlog:
+    command: /scripts/basebackup.sh    # 自定義腳本
+    retries: 2                         # 失敗時重試次數
+
+  # PostgreSQL 二進制文件目錄
+  bin_dir: /usr/lib/seasql/14/bin
+
+  # --------------------------------------------------------------------------
+  # 回調腳本
+  # 在特定事件發生時執行
+  # --------------------------------------------------------------------------
+  callbacks:
+    # 角色變更時執行的腳本（主節點 ↔ 副本）
+    on_role_change: /scripts/on_role_change.sh zalandos true
+
+  # --------------------------------------------------------------------------
+  # 連接地址配置
+  # ⚠️ 重要：這決定了 conn_url 的值
+  # --------------------------------------------------------------------------
+  # 這個地址會被寫入 DCS，其他節點用它來連接這個節點
+  # 177.177.150.184 是 Pod IP（不推薦，應該使用 DNS）
+  # 推薦改為：seasql-base-0.seasql-base-headless:1523
+  connect_address: 177.177.150.184:1523
+
+  # --------------------------------------------------------------------------
+  # 創建副本的方法
+  # --------------------------------------------------------------------------
+  create_replica_method:
+  - basebackup_fast_xlog    # 使用上面定義的自定義方法
+
+  # PostgreSQL 數據目錄
+  data_dir: /var/lib/seasql//ssdata/data
+
+  # 預設資料庫名稱
+  database: seasql
+
+  # PostgreSQL 監聽地址
+  # *:1523 = 監聽所有網卡的 1523 端口
+  listen: '*:1523'
+
+  # 節點名稱（必須在叢集中唯一）
+  name: seasql-base-0
+
+  # --------------------------------------------------------------------------
+  # PostgreSQL 參數配置
+  # 這些會覆蓋 bootstrap.dcs.postgresql.parameters 中的設置
+  # --------------------------------------------------------------------------
+  parameters:
+    # 歸檔命令（/bin/true = 不實際歸檔，只是標記為已歸檔）
+    # 如果需要真正的歸檔，改為：
+    # archive_command: 'test ! -f /backup/wal/%f && cp %p /backup/wal/%f'
+    archive_command: /bin/true
+
+    # 自定義擴展白名單的路徑
+    extwlist.custom_path: /scripts
+
+    # 允許的 PostgreSQL 擴展列表
+    # 這些擴展可以被非超級用戶創建
+    extwlist.extensions: btree_gin,btree_gist,citext,extra_window_functions,first_last_agg,hll,hstore,hypopg,intarray,ltree,pgcrypto,pgq,pgq_node,pg_trgm,postgres_fdw,tablefunc,uuid-ossp,timescaledb,pg_partman
+
+    # 日誌目標（csvlog = CSV 格式日誌）
+    log_destination: csvlog
+
+    # 日誌目錄（相對於數據目錄）
+    log_directory: ../log
+
+    # 日誌文件權限
+    log_file_mode: '0644'
+
+    # 日誌文件名格式
+    # %u = 星期幾（0-6）
+    log_filename: seasql-%u.log
+
+    # 日誌輪轉週期（1 天）
+    log_rotation_age: 1d
+
+    # 日誌輪轉時截斷舊文件
+    log_truncate_on_rotation: 'on'
+
+    # 啟用日誌收集器
+    logging_collector: 'on'
+
+    # pg_stat_statements 不追蹤工具命令（如 VACUUM, ANALYZE）
+    pg_stat_statements.track_utility: 'off'
+
+    # 共享緩衝區大小
+    # 1638MB（通常設置為總記憶體的 25%）
+    shared_buffers: 1638MB
+
+    # 共享預加載庫
+    # 這些擴展會在 PostgreSQL 啟動時自動加載
+    shared_preload_libraries: pg_stat_statements,pgextwlist,set_user,timescaledb,pg_cron,pg_stat_kcache
+
+    # 啟用 SSL
+    ssl: 'on'
+
+    # SSL 證書文件路徑
+    ssl_cert_file: /run/certs/server.crt
+
+    # SSL 密鑰文件路徑
+    ssl_key_file: /run/certs/server.key
+
+  # --------------------------------------------------------------------------
+  # pg_hba.conf 配置
+  # 控制客戶端認證
+  # --------------------------------------------------------------------------
+  pg_hba:
+  - local   all             all                                   trust
+    # 本地 Unix socket 連接，所有用戶，所有資料庫，不需要密碼
+
+  - host    all             all                0.0.0.0/0          md5
+    # IPv4 網路連接，所有用戶，所有資料庫，使用 MD5 密碼認證
+
+  - host    all             all                ::/0               md5
+    # IPv6 網路連接，所有用戶，所有資料庫，使用 MD5 密碼認證
+
+  - local   replication     standby                    trust
+    # 本地複製連接，standby 用戶，不需要密碼
+
+  - hostssl replication     standby all                md5
+    # SSL 複製連接，standby 用戶，使用 MD5 密碼認證
+
+  # pgpass 文件路徑
+  # 用於存儲密碼，避免在命令行中明文傳遞
+  pgpass: /run/seasql/pgpass
+
+  # 使用 Unix socket 進行本地連接（超級用戶連接）
+  use_unix_socket: true
+
+  # 使用 Unix socket 進行複製連接
+  use_unix_socket_repl: true
+
+# ============================================================================
+# REST API 配置
+# Patroni 的 HTTP REST API 服務
+# ============================================================================
+restapi:
+  # REST API 的外部連接地址
+  # ⚠️ 同樣使用 Pod IP，建議改為 DNS
+  # 推薦：seasql-base-0.seasql-base-headless:8008
+  connect_address: 177.177.150.184:8008
+
+  # REST API 監聽地址
+  # :8008 = 監聽所有網卡的 8008 端口
+  listen: :8008
+
+# ============================================================================
+# Scope - 叢集名稱
+# 同一個 namespace 中的多個 Patroni 叢集通過 scope 區分
+# ============================================================================
+scope: seasql-base
+
+# ============================================================================
+# SeaSQL 自定義配置
+# 這似乎是自定義的配置段
+# ============================================================================
+seasql:
+  parameters:
+    # 這裡的 shared_buffers 會被上面的 postgresql.parameters 覆蓋
+    shared_buffers: 32MB
+
+# ============================================================================
+# Tags - 節點標籤
+# 用於控制節點的行為
+# ============================================================================
+tags:
+  # 允許其他節點從這個節點克隆
+  clonefrom: true
+
+  # 不阻止這個節點成為主節點
+  nofailover: false
+
+  # 不從負載均衡中排除這個節點
+  noloadbalance: false
+
+  # 允許這個節點成為同步副本
+  nosync: false
+
+# ============================================================================
+# Watchdog 配置
+# 硬體 watchdog，用於防止腦裂
+# ============================================================================
+watchdog:
+  # watchdog 設備路徑
+  device: /dev/watchdog
+
+  # watchdog 模式
+  # false = 禁用（如果沒有硬體 watchdog 設備）
+  # 如果有硬體 watchdog，應該設置為 'automatic' 或 'required'
+  mode: false
